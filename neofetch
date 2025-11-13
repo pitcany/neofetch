@@ -1883,11 +1883,15 @@ get_de() {
         de+=" $de_ver"
     fi
 
-    # TODO:
-    #  - New config option + flag: --de_display_server on/off ?
-    #  - Add display of X11, Arcan and anything else relevant.
-    [[ $de && $WAYLAND_DISPLAY ]] &&
-        de+=" (Wayland)"
+    # Display server detection (Wayland/X11)
+    # Check multiple methods for reliable detection on Ubuntu 22.04+ and other modern distros
+    if [[ $de ]]; then
+        if [[ $XDG_SESSION_TYPE == "wayland" ]] || [[ $WAYLAND_DISPLAY ]]; then
+            de+=" (Wayland)"
+        elif [[ $XDG_SESSION_TYPE == "x11" ]] || [[ $DISPLAY && ! $WAYLAND_DISPLAY ]]; then
+            de+=" (X11)"
+        fi
+    fi
 
     de_run=1
 }
@@ -2286,6 +2290,13 @@ get_cpu() {
 
         "Mac OS X"|"macOS")
             cpu="$(sysctl -n machdep.cpu.brand_string)"
+
+            # Detect Apple Silicon (M1/M2/M3/M4) via architecture check
+            if [[ "$(sysctl -n hw.optional.arm64 2>/dev/null)" == "1" ]] || [[ "$cpu" == "Apple "* ]]; then
+                # Apple Silicon detected - ensure proper formatting
+                # sysctl returns: "Apple M1", "Apple M2 Pro", "Apple M3 Max", etc.
+                [[ "$cpu" != "Apple "* ]] && cpu="Apple Silicon"
+            fi
 
             # Get CPU cores.
             case $cpu_cores in
@@ -3774,6 +3785,21 @@ get_battery() {
                 if [[ "$capacity" ]]; then
                     battery="${capacity}% [${status}]"
 
+                    # Calculate battery health if available
+                    if [[ -f "${bat}/energy_full" && -f "${bat}/energy_full_design" ]]; then
+                        energy_full="$(< "${bat}/energy_full")"
+                        energy_design="$(< "${bat}/energy_full_design")"
+                        [[ "$energy_design" -gt 0 ]] && \
+                            health="$((100 * energy_full / energy_design))" && \
+                            battery="${capacity}% (${health}% health) [${status}]"
+                    elif [[ -f "${bat}/charge_full" && -f "${bat}/charge_full_design" ]]; then
+                        charge_full="$(< "${bat}/charge_full")"
+                        charge_design="$(< "${bat}/charge_full_design")"
+                        [[ "$charge_design" -gt 0 ]] && \
+                            health="$((100 * charge_full / charge_design))" && \
+                            battery="${capacity}% (${health}% health) [${status}]"
+                    fi
+
                     case $battery_display in
                         "bar")     battery="$(bar "$capacity" 100)" ;;
                         "infobar") battery+=" $(bar "$capacity" 100)" ;;
@@ -3823,6 +3849,17 @@ get_battery() {
             battery="$(pmset -g batt | grep -o '[0-9]*%')"
             state="$(pmset -g batt | awk '/;/ {print $4}')"
             [[ "$state" == "charging;" ]] && battery_state="charging"
+
+            # Get battery health (max capacity vs design capacity)
+            if type -p ioreg &>/dev/null; then
+                battery_info="$(ioreg -r -c AppleSmartBattery)"
+                max_capacity="$(echo "$battery_info" | awk '/"MaxCapacity"/ {print $3}')"
+                design_capacity="$(echo "$battery_info" | awk '/"DesignCapacity"/ {print $3}')"
+                if [[ "$design_capacity" && "$max_capacity" && "$design_capacity" -gt 0 ]]; then
+                    health="$((100 * max_capacity / design_capacity))"
+                    battery="${battery/\%/ (${health}% health)%}"
+                fi
+            fi
         ;;
 
         "Windows")
